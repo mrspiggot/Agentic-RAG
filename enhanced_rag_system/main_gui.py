@@ -9,6 +9,17 @@ import sys
 import os
 import time # For showing messages
 
+from rag_system.config.settings import Configuration
+from rag_system.ui.factories import UserInterfaceFactory
+from rag_system.ui.gui.interface import StreamlitGUIInterface
+from rag_system.utils.logger import setup_logger
+import pandas  # Needed by presenter
+from dotenv import load_dotenv
+from rag_system.core.application import RAGApplication
+import tempfile
+
+load_dotenv()
+
 # --- Path Setup ---
 # Add package root to path for imports
 try:
@@ -23,32 +34,10 @@ except Exception as e:
 
 # --- Core Application Imports ---
 # Encapsulate imports in a function to check dependencies clearly at startup
-def check_and_import():
-    missing_deps = []
-    try: from rag_system.core.application import RAGApplication
-    except ImportError: missing_deps.append("rag_system core")
-    try: from rag_system.config.settings import Configuration
-    except ImportError: missing_deps.append("rag_system config")
-    try: from rag_system.ui.factories import UserInterfaceFactory
-    except ImportError: missing_deps.append("rag_system ui factories")
-    try: from rag_system.ui.gui.interface import StreamlitGUIInterface
-    except ImportError: missing_deps.append("rag_system gui interface")
-    try: from rag_system.utils.logger import setup_logger
-    except ImportError: missing_deps.append("rag_system logger")
-    try: import pandas # Needed by presenter
-    except ImportError: missing_deps.append("pandas")
-    try: import dotenv # Needed by Configuration
-    except ImportError: missing_deps.append("python-dotenv")
 
-    if missing_deps:
-        st.error(f"ERROR: Missing required Python packages: {', '.join(missing_deps)}. Please install them.")
-        st.code(f"pip install {' '.join(missing_deps)}")
-        st.stop()
-
-    return RAGApplication, Configuration, StreamlitGUIInterface, setup_logger
 
 # Perform imports after check
-RAGApplication, Configuration, StreamlitGUIInterface, setup_logger = check_and_import()
+
 
 # --- Initialize Logger ---
 # Setup logger once

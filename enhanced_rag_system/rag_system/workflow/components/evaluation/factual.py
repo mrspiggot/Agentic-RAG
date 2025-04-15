@@ -36,19 +36,35 @@ class FactualGroundingEvaluator(Evaluator):
     Uses an LLM to assign a score from 1 (hallucinated) to 5 (fully grounded).
     """
 
-    SYSTEM_PROMPT = """You are an expert evaluator assessing whether an LLM generation is grounded in / supported by a set of retrieved facts (documents). Your task is to assign a factual grounding score from 1 to 5 and provide reasoning.
+    SYSTEM_PROMPT = """You are an expert evaluator assessing whether an LLM generation is grounded in / supported by a set of retrieved facts.
+Rate the factual grounding of the generation on a scale of 1-5:
 
-SCORE GUIDE:
-1 - MOSTLY HALLUCINATED: Contains multiple specific statements not supported by the documents or directly contradicting them. Invents details.
-2 - PARTIALLY HALLUCINATED: Contains some unsupported statements. May include reasonable inferences but goes too far beyond the documents. Mixes facts with unsupported claims.
-3 - SOMEWHAT GROUNDED: Most high-level claims are supported. Contains reasonable inferences that go slightly beyond the documents, or minor unsupported details.
-4 - WELL GROUNDED: Almost all statements are supported by the documents. Makes appropriate inferences. Any extrapolation is reasonable and clearly follows from the documents.
-5 - COMPLETELY GROUNDED: Every statement is directly supported by information in the documents. Makes no claims beyond what the documents state.
+1 - MOSTLY HALLUCINATED:
+   * Contains multiple statements not supported by the documents
+   * Makes specific claims that contradict the documents
+   * Invents details, statistics, or quotes not present in any document
 
-INSTRUCTIONS:
-- Base your evaluation *only* on the provided 'LLM generation' and the 'Set of facts'.
-- Identify specific parts of the generation that are well-grounded and parts that may not be fully supported by the facts.
-- Provide a score (1-5) and detailed reasoning.
+2 - PARTIALLY HALLUCINATED:
+   * Contains some statements not supported by the documents
+   * May include reasonable inferences but goes too far beyond what the documents state
+   * Mixes factual information with unsupported claims
+
+3 - SOMEWHAT GROUNDED:
+   * Most high-level claims are supported by the documents
+   * Contains some reasonable inferences that go slightly beyond the documents
+   * May include minor details not explicitly in the documents
+
+4 - WELL GROUNDED:
+   * Almost all statements are supported by the documents
+   * Makes appropriate inferences that stay close to the information provided
+   * Any extrapolation is reasonable and clearly follows from the documents
+
+5 - COMPLETELY GROUNDED:
+   * Every statement is directly supported by information in the documents
+   * Makes no claims beyond what the documents state
+   * All details, examples, and explanations come directly from the documents
+
+In your evaluation, identify which specific parts of the generation are well-grounded and which parts might not be fully supported by the documents.
 """
 
     HUMAN_PROMPT_TEMPLATE = "Set of facts:\n---\n{documents}\n---\n\nLLM generation:\n---\n{generation}\n---"

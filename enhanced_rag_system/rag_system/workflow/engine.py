@@ -1,6 +1,5 @@
 # File: rag_system/workflow/engine.py
-# Instruction: Replace the entire content of this file.
-#              (Based on user snapshot from #123, adding missing _fallback_generate_node method)
+# (Complete file content modified to grade web search results)
 
 import logging
 import time
@@ -12,18 +11,12 @@ import subprocess
 from typing import Dict, Any, Optional, List, Tuple, Literal, Type
 from datetime import datetime, timezone
 
-# --- Core Dependencies (Direct Imports - Fail Fast if missing) ---
-try:
-    from pydantic import BaseModel, Field, ValidationError
-    from langgraph.graph import StateGraph, START, END
-    try: from langgraph.graph import CompiledGraph
-    except ImportError: CompiledGraph = Any # Fallback type hint
-    from langchain_core.prompts import ChatPromptTemplate
-    Runnable = Any
-except ImportError as e:
-    logging.critical(f"FATAL ERROR: Failed to import core dependencies (pydantic, langgraph, langchain-core).")
-    logging.critical(f"Ensure packages are installed correctly in your environment (.venv). Error: {e}", exc_info=True)
-    raise
+# --- Core Dependencies (Direct Imports - Rule #10) ---
+from pydantic import BaseModel, Field, ValidationError
+from langgraph.graph import StateGraph, START, END
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import Runnable
+from langgraph.graph.graph import CompiledGraph
 
 # --- Relative Imports ---
 from ..config.settings import Configuration, ConfigurationError
@@ -65,7 +58,6 @@ class RAGWorkflowManager:
     Includes initial routing, retrieval, grading, generation, and post-evaluation checks with fallback.
     """
 
-    # (__init__ and _build_question_router copied directly from user snapshot #123)
     def __init__(self,
                  config: Configuration,
                  doc_corpus: DocumentCorpus,
@@ -116,13 +108,13 @@ The vectorstore contains documents related to: AI agents, LangChain, LangGraph, 
 Use the vectorstore for specific questions about these topics.
 Use web_search for: General knowledge questions, current events, or topics clearly outside the vectorstore scope (e.g., finance, sports, cooking).
 Choose only 'vectorstore' or 'web_search' as the datasource."""
+        # Ensure ChatPromptTemplate is imported directly if it's core
         self._router_prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{question}")])
-        self._router_schema = RouteQuery
+        self._router_schema = RouteQuery # RouteQuery uses Pydantic, also imported directly
         logger.info("Question router prompt and schema prepared.")
 
 
     # --- Node Function Implementations ---
-    # (_initialize_node, _retrieve_vectorstore_node, _web_search_node, _grade_documents_node, _generate_node, _evaluate_answer_node copied directly from user snapshot #123)
     def _initialize_node(self, state: WorkflowState) -> WorkflowState:
         logger.info(f"Workflow initializing for question: '{state.original_question[:100]}...'")
         state.add_log("INFO", "Workflow started.", node="initialize")
@@ -139,7 +131,9 @@ Choose only 'vectorstore' or 'web_search' as the datasource."""
         try:
             retriever = self.retriever_factory.create("semantic", self.config, self.doc_corpus)
             retrieved_docs = retriever.retrieve(state.question, state, self.config)
-            state.add_retrieval_result(retriever.get_name(), state.question, retrieved_docs)
+            # Set strategy name before adding results
+            state.current_retrieval_strategy = retriever.get_name()
+            state.add_retrieval_result(state.current_retrieval_strategy, state.question, retrieved_docs)
         except RetrieverError as e:
             logger.error(f"Vectorstore retrieval failed: {e}", exc_info=False); state.add_log("ERROR", f"Vectorstore retrieval failed: {e}", node=node_name); state.documents = []
         except Exception as e:
@@ -154,53 +148,84 @@ Choose only 'vectorstore' or 'web_search' as the datasource."""
         try:
             retriever = self.retriever_factory.create("web", self.config, self.doc_corpus)
             retrieved_docs = retriever.retrieve(state.original_question, state, self.config)
-            state.add_retrieval_result(retriever.get_name(), state.original_question, retrieved_docs)
+            # Set strategy name before adding results
+            state.current_retrieval_strategy = retriever.get_name()
+            state.add_retrieval_result(state.current_retrieval_strategy, state.original_question, retrieved_docs)
         except RetrieverError as e:
             logger.error(f"Web search retrieval failed: {e}", exc_info=False); state.add_log("ERROR", f"Web search retrieval failed: {e}", node=node_name); state.documents = []
         except Exception as e:
             logger.error(f"Unexpected error during web search retrieval: {e}", exc_info=True); state.add_log("ERROR", f"Unexpected web search retrieval error: {e}", node=node_name); state.documents = []
         return state
 
+    # *** MODIFIED FUNCTION: _grade_documents_node ***
     def _grade_documents_node(self, state: WorkflowState) -> WorkflowState:
         node_name = "grade_documents"
         documents_to_grade = state.documents
-        if state.current_retrieval_strategy != "SemanticRetriever":
-             state.add_log("INFO", f"Skipping grading for non-vectorstore strategy '{state.current_retrieval_strategy}'.", node=node_name)
-             return state
-        state.add_log("INFO", f"Starting document relevance grading for {len(documents_to_grade)} vectorstore documents.", node=node_name)
+        retrieval_source = state.current_retrieval_strategy # Get source strategy
+
+        # --- REMOVED CONDITIONAL SKIP ---
+        # No longer skip based on strategy; grade all retrieved documents.
+        # --------------------------------
+
+        state.add_log("INFO", f"Starting document relevance grading for {len(documents_to_grade)} documents from '{retrieval_source}'.", node=node_name)
         relevant_docs: List[Document] = []
+
         if not documents_to_grade:
-             state.add_log("WARNING", "No documents to grade.", node=node_name); state.documents = []; return state
+             state.add_log("WARNING", "No documents to grade.", node=node_name)
+             # Ensure state.documents is empty if none to grade
+             state.documents = []
+             return state
+
         evaluator: Optional[Evaluator] = None
         try:
-             if not self._llm_interaction: raise WorkflowError("LLM Interaction missing.")
+             if not self._llm_interaction: raise WorkflowError("LLM Interaction missing for grading.")
              evaluator = self.evaluator_factory.create("relevance", self.config, self._llm_interaction)
+             # Use the threshold currently set in the state
              current_threshold = state.relevance_threshold
-             if hasattr(evaluator, 'relevance_threshold'): evaluator.relevance_threshold = current_threshold
+             # Pass threshold to evaluator if it supports it (our RelevanceEvaluator does)
+             if hasattr(evaluator, 'relevance_threshold'):
+                 evaluator.relevance_threshold = current_threshold
+
+             # Grade each document
              for doc in documents_to_grade:
+                 # The evaluator's evaluate method now handles updating state.url_usage_tracking
                  eval_result = evaluator.evaluate(state, self.config, document=doc)
-                 threshold_used = getattr(evaluator, 'relevance_threshold', current_threshold)
+
+                 # Check if the document is relevant based on the threshold used by the evaluator
+                 threshold_used = getattr(evaluator, 'relevance_threshold', current_threshold) # Get threshold used
                  is_relevant = eval_result.get("relevance_score", 0) >= threshold_used
-                 log_level = "DEBUG"
+                 log_level = "DEBUG" # Log individual grading results as DEBUG
+
                  if is_relevant:
-                     relevant_docs.append(doc); state.add_log(log_level, f"Doc ID {doc.id} relevant (Score: {eval_result.get('relevance_score', 'N/A')} >= {threshold_used}). Keeping.", node=node_name)
+                     relevant_docs.append(doc)
+                     state.add_log(log_level, f"Doc ID {doc.id} relevant (Score: {eval_result.get('relevance_score', 'N/A')} >= {threshold_used}). Keeping.", node=node_name)
                  else:
                       state.add_log(log_level, f"Doc ID {doc.id} irrelevant (Score: {eval_result.get('relevance_score', 'N/A')} < {threshold_used}). Discarding.", node=node_name)
+
+             # Update the main documents list in the state with only relevant ones
              state.set_relevant_documents(relevant_docs, node_name=node_name)
+
         except EvaluatorError as e:
-             logger.error(f"Grading failed: {e}", exc_info=False); state.add_log("ERROR", f"Grading failed: {e}", node=node_name); state.set_relevant_documents([], node_name=node_name)
+             logger.error(f"Grading failed: {e}", exc_info=False)
+             state.add_log("ERROR", f"Grading failed: {e}", node=node_name)
+             # Discard all docs if grading fails? Or keep original? Let's discard.
+             state.set_relevant_documents([], node_name=node_name)
         except Exception as e:
-             logger.error(f"Unexpected error during grading: {e}", exc_info=True); state.add_log("ERROR", f"Unexpected grading error: {e}", node=node_name); state.set_relevant_documents([], node_name=node_name)
+             logger.error(f"Unexpected error during grading: {e}", exc_info=True)
+             state.add_log("ERROR", f"Unexpected grading error: {e}", node=node_name)
+             state.set_relevant_documents([], node_name=node_name) # Discard on unexpected error
+
         return state
 
     def _generate_node(self, state: WorkflowState) -> WorkflowState:
         node_name = "generate"
         docs_count = len(state.documents)
-        source_type = "web search" if state.current_retrieval_strategy == "WebSearchRetriever" else "graded vectorstore"
-        state.add_log("INFO", f"Starting answer generation using 'RAG' strategy with {docs_count} {source_type} documents.", node=node_name)
+        # Make source type description more general
+        source_type = f"{docs_count} document(s) from '{state.current_retrieval_strategy}' after grading"
+        state.add_log("INFO", f"Starting answer generation using 'RAG' strategy with {source_type}.", node=node_name)
         generator: Optional[Generator] = None
         try:
-            if not self._llm_interaction: raise WorkflowError("LLM Interaction missing.")
+            if not self._llm_interaction: raise WorkflowError("LLM Interaction missing for generation.")
             generator = self.generator_factory.create("rag", self.config, self._llm_interaction)
             answer, metadata = generator.generate(state, self.config)
             state.set_final_answer(answer, metadata)
@@ -218,35 +243,39 @@ Choose only 'vectorstore' or 'web_search' as the datasource."""
               state.evaluation_results["factual"] = {"status": "skipped", "reason": "No valid answer generated."}; state.evaluation_results["quality"] = {"status": "skipped", "reason": "No valid answer generated."}
               return state
          try:
-             if not self._llm_interaction: raise WorkflowError("LLM Interaction missing.")
+             if not self._llm_interaction: raise WorkflowError("LLM Interaction missing for evaluation.")
              logger.debug("Running factual grounding evaluation...")
              factual_evaluator = self.evaluator_factory.create("factual", self.config, self._llm_interaction)
-             factual_evaluator.evaluate(state, self.config)
+             factual_evaluator.evaluate(state, self.config) # Updates state internally
              logger.debug(f"Factual eval result added: {state.evaluation_results.get('factual')}")
              logger.debug("Running answer quality evaluation...")
              quality_evaluator = self.evaluator_factory.create("quality", self.config, self._llm_interaction)
-             quality_evaluator.evaluate(state, self.config)
+             quality_evaluator.evaluate(state, self.config) # Updates state internally
              logger.debug(f"Quality eval result added: {state.evaluation_results.get('quality')}")
              state.add_log("INFO", "Post-generation answer evaluation complete.", node=node_name)
          except EvaluatorError as e:
               logger.error(f"Post-generation evaluation failed: {e}", exc_info=False); state.add_log("ERROR", f"Post-generation evaluation failed: {e}", node=node_name)
-              state.evaluation_results["factual"] = state.evaluation_results.get("factual", {"error": str(e)}); state.evaluation_results["quality"] = state.evaluation_results.get("quality", {"error": str(e)})
+              # Ensure results dicts exist before adding error keys
+              if "factual" not in state.evaluation_results: state.evaluation_results["factual"] = {}
+              if "quality" not in state.evaluation_results: state.evaluation_results["quality"] = {}
+              state.evaluation_results["factual"]["error"] = str(e)
+              state.evaluation_results["quality"]["error"] = str(e)
          except Exception as e:
               logger.error(f"Unexpected error during post-generation evaluation: {e}", exc_info=True); state.add_log("ERROR", f"Unexpected evaluation error: {e}", node=node_name)
-              state.evaluation_results["factual"] = state.evaluation_results.get("factual", {"error": str(e)}); state.evaluation_results["quality"] = state.evaluation_results.get("quality", {"error": str(e)})
+              if "factual" not in state.evaluation_results: state.evaluation_results["factual"] = {}
+              if "quality" not in state.evaluation_results: state.evaluation_results["quality"] = {}
+              state.evaluation_results["factual"]["error"] = str(e)
+              state.evaluation_results["quality"]["error"] = str(e)
          return state
 
-    # *** ADDED MISSING NODE METHOD ***
     def _fallback_generate_node(self, state: WorkflowState) -> WorkflowState:
-        """ Generates a predefined fallback answer if evaluation fails. """
         node_name = "fallback_generate"
         state.add_log("WARNING", "Executing fallback generation.", node=node_name)
         generator: Optional[Generator] = None
         try:
-            # Factory create doesn't strictly need LLM interaction for fallback,
-            # but pass main one for potential future fallback strategies that might use it.
+            # Pass llm_interaction even if fallback doesn't use it, for factory consistency
             generator = self.generator_factory.create("fallback", self.config, self._llm_interaction)
-            answer, metadata = generator.generate(state, self.config) # Pass state for context if needed by generator
+            answer, metadata = generator.generate(state, self.config)
             state.set_final_answer(answer, metadata)
         except GeneratorError as e:
              logger.error(f"Fallback generation failed: {e}", exc_info=False)
@@ -259,7 +288,6 @@ Choose only 'vectorstore' or 'web_search' as the datasource."""
         return state
 
     # --- Edge Functions ---
-    # (_route_question_edge copied directly from user snapshot #123 - which correctly returns KEYS)
     def _route_question_edge(self, state: WorkflowState) -> Literal["vectorstore", "web_search"]:
         node_name = "route_question"
         state.add_log("INFO", f"Routing question: '{state.question[:100]}...'", node=node_name)
@@ -268,7 +296,8 @@ Choose only 'vectorstore' or 'web_search' as the datasource."""
             logger.error("Question router components not initialized. Defaulting to vectorstore."); state.add_log("ERROR", "Question router not initialized, defaulting.", node=node_name); return "vectorstore"
         try:
             prompt_value = self._router_prompt.format_prompt(question=state.question)
-            routing_result: RouteQuery = interaction_to_use.invoke_structured_output(prompt=prompt_value.to_messages() if hasattr(prompt_value, 'to_messages') else str(prompt_value), output_schema=self._router_schema)
+            prompt_input = prompt_value.to_messages() if hasattr(prompt_value, 'to_messages') else str(prompt_value)
+            routing_result: RouteQuery = interaction_to_use.invoke_structured_output(prompt=prompt_input, output_schema=self._router_schema)
             datasource = routing_result.datasource.lower()
             if datasource == "vectorstore": logger.info("Routing decision: 'vectorstore'"); state.add_log("INFO", "Routing decision: 'vectorstore'.", node=node_name); return "vectorstore"
             elif datasource == "web_search": logger.info("Routing decision: 'web_search'"); state.add_log("INFO", "Routing decision: 'web_search'.", node=node_name); return "web_search"
@@ -278,12 +307,12 @@ Choose only 'vectorstore' or 'web_search' as the datasource."""
         except Exception as e:
              logger.error(f"Unexpected error during question routing: {e}", exc_info=True); state.add_log("ERROR", f"Unexpected routing error: {e}. Defaulting.", node=node_name); return "vectorstore"
 
-    # (_decide_after_evaluation copied directly from user snapshot #123 - which correctly returns END/"needs_fallback")
     def _decide_after_evaluation(self, state: WorkflowState) -> Literal[END, "needs_fallback"]:
          node_name = "decide_after_evaluation"
          state.add_log("INFO", "Deciding next step after evaluation.", node=node_name)
          factual_results = state.evaluation_results.get("factual", {})
          quality_results = state.evaluation_results.get("quality", {})
+         # Default to True if evaluation somehow failed or was skipped, to avoid unnecessary fallback
          is_factual = factual_results.get("is_factual", True)
          is_good_quality = quality_results.get("is_good_quality", True)
          logger.info(f"Evaluation Scores: Factual={factual_results.get('factual_score', 'N/A')}, Quality={quality_results.get('overall_score', 'N/A')}")
@@ -298,50 +327,142 @@ Choose only 'vectorstore' or 'web_search' as the datasource."""
 
 
     # --- Graph Building ---
-    # *** UPDATED to use correct node method name and wire in fallback ***
-    def build_graph(self) -> Any: # Return Any or CompiledGraph
+    # *** MODIFIED FUNCTION: build_graph ***
+    def build_graph(self) -> CompiledGraph:
         """Builds and compiles the LangGraph StateGraph with routing and evaluation fallback."""
         if self._is_graph_built and self._compiled_graph:
+            logger.debug("Returning cached compiled graph.")
+            if self._compiled_graph is None:
+                 logger.error("Graph marked as built but compiled graph is None. Rebuilding.")
+                 self._is_graph_built = False
+                 raise WorkflowError("Graph marked as built but compiled graph is None.")
             return self._compiled_graph
+
         logger.info("Building RAG workflow graph (with routing and evaluation fallback)...")
+        # Ensure StateGraph is imported directly
         workflow = StateGraph(WorkflowState)
+        # Define Nodes
         workflow.add_node("initialize", self._initialize_node)
-        workflow.add_node("retrieve_vectorstore", self._retrieve_vectorstore_node) # Corrected callable
+        workflow.add_node("retrieve_vectorstore", self._retrieve_vectorstore_node)
         workflow.add_node("retrieve_web_search", self._web_search_node)
         workflow.add_node("grade_documents", self._grade_documents_node)
         workflow.add_node("generate", self._generate_node)
         workflow.add_node("evaluate_answer", self._evaluate_answer_node)
-        workflow.add_node("fallback_generate", self._fallback_generate_node) # Add node definition
+        workflow.add_node("fallback_generate", self._fallback_generate_node)
+
+        # --- Define Edges ---
         workflow.add_edge(START, "initialize")
+        # Route question after initialization
         workflow.add_conditional_edges(
              "initialize", self._route_question_edge,
              {"vectorstore": "retrieve_vectorstore", "web_search": "retrieve_web_search"}
         )
+        # --- MODIFIED EDGES ---
+        # BOTH retrieval methods now go to grading
         workflow.add_edge("retrieve_vectorstore", "grade_documents")
+        workflow.add_edge("retrieve_web_search", "grade_documents") # Changed from "generate"
+        # --------------------
+        # After grading, proceed to generation
         workflow.add_edge("grade_documents", "generate")
-        workflow.add_edge("retrieve_web_search", "generate")
+        # After generation, evaluate the answer
         workflow.add_edge("generate", "evaluate_answer")
+        # Decide final path after evaluation
         workflow.add_conditional_edges(
              "evaluate_answer", self._decide_after_evaluation,
-             {END: END, "needs_fallback": "fallback_generate"} # Map to new node
+             {END: END, "needs_fallback": "fallback_generate"}
         )
-        workflow.add_edge("fallback_generate", END) # Add edge from fallback to END
+        # Fallback leads to the end
+        workflow.add_edge("fallback_generate", END)
+
+        # Compile the graph
         try:
             self._compiled_graph = workflow.compile()
             self._is_graph_built = True
-            logger.info("Workflow graph compiled successfully (with routing and evaluation fallback).")
+            logger.info("Workflow graph compiled successfully (web search now routes to grading).")
+            if self._compiled_graph is None:
+                 raise WorkflowError("Graph compilation returned None unexpectedly.")
             return self._compiled_graph
         except Exception as e:
              logger.error(f"Failed to compile workflow graph: {e}", exc_info=True)
              self._is_graph_built = False
+             self._compiled_graph = None
              raise WorkflowError(f"Graph compilation failed: {e}") from e
 
+    # --- Graph Visualization Method (Using Graphviz/pygraphviz) ---
+    def get_graph_visualization_png(self) -> Optional[bytes]:
+        """
+        Generates a PNG visualization of the compiled workflow graph using Graphviz/pygraphviz.
+        Requires 'pygraphviz' Python package and system 'graphviz' library to be installed.
+        """
+        if not self._compiled_graph:
+            # Attempt to build the graph if not already compiled, for visualization purposes
+            try:
+                logger.info("Graph not compiled for visualization request. Attempting build now.")
+                self.build_graph()
+                if not self._compiled_graph:
+                     logger.warning("Graph compilation failed during visualization request.")
+                     return None
+            except Exception as e:
+                logger.error(f"Failed to build graph for visualization: {e}", exc_info=False)
+                return None
+
+        logger.info("Attempting to generate workflow graph PNG using draw_png / Graphviz...")
+        try:
+            if self._compiled_graph is None:
+                 logger.error("Cannot generate graph PNG: Compiled graph is None even after build attempt.")
+                 return None
+
+            # Call draw_png() - relies on the successfully installed pygraphviz
+            png_bytes = self._compiled_graph.get_graph(xray=True).draw_png()
+
+            if png_bytes:
+                 logger.info(f"Successfully generated graph PNG data using draw_png ({len(png_bytes)} bytes).")
+                 return png_bytes
+            else:
+                 logger.warning("draw_png() returned None or empty bytes without raising an exception.")
+                 return None
+
+        except ImportError as ie:
+             logger.error(f"ImportError during Graphviz rendering: {ie}. Is 'pygraphviz' still installed?", exc_info=True)
+             return None
+        except FileNotFoundError as fnf_e:
+             logger.error(f"Graphviz FileNotFoundError: {fnf_e}. Can't find 'dot' executable.", exc_info=True)
+             return None
+        except Exception as e:
+             logger.error(f"Failed to draw workflow graph using draw_png: {e}", exc_info=True)
+             return None
+
+
     # --- Workflow Execution & Result Creation ---
-    # (run_workflow and _create_result_from_state remain the same)
     def run_workflow(self, question: str, initial_source_urls: Optional[List[str]] = None) -> Result:
         start_run_time = time.time()
         logger.info(f"--- Starting Workflow Run for question: '{question[:100]}...' ---")
-        compiled_graph = self.build_graph()
+        graph_png_bytes: Optional[bytes] = None # Initialize graph data variable
+
+        # Ensure graph is built before proceeding
+        compiled_graph: Optional[CompiledGraph] = None
+        try:
+            compiled_graph = self.build_graph() # Will build or return cached graph
+            if not compiled_graph:
+                 raise WorkflowError("Graph compilation failed or returned None.")
+
+            # Attempt to generate graph visualization AFTER compiling
+            logger.info("Attempting to generate graph visualization PNG after compilation...")
+            try:
+                 graph_png_bytes = self.get_graph_visualization_png()
+                 if graph_png_bytes: logger.info("Generated graph visualization PNG successfully.")
+                 else: logger.warning("Graph visualization PNG generation returned None or failed.")
+            except Exception as graph_err:
+                  logger.error(f"Failed to generate graph visualization: {graph_err}", exc_info=False)
+
+        except WorkflowError as e:
+             logger.error(f"Cannot run workflow, graph setup failed: {e}", exc_info=True)
+             return Result(question=question, answer_text=f"Workflow setup failed: {e}", execution_metadata={"error": str(e)}, graph_diagram_data=graph_png_bytes)
+        except Exception as e:
+            logger.error(f"Unexpected error during graph build: {e}", exc_info=True)
+            return Result(question=question, answer_text=f"Unexpected workflow setup error: {e}", execution_metadata={"error": str(e)}, graph_diagram_data=graph_png_bytes)
+
+
         initial_state_input = {
             "question": question, "original_question": question, "documents": [],
             "answer": None, "transform_attempts": 0,
@@ -364,71 +485,103 @@ Choose only 'vectorstore' or 'web_search' as the datasource."""
             logger.info("Invoking workflow graph...")
             final_state_dict = compiled_graph.invoke(initial_state_input, config={"recursion_limit": 10})
             logger.info("Workflow graph invocation complete.")
+
             if final_state_dict and isinstance(final_state_dict, dict):
-                 try: final_state = WorkflowState(**final_state_dict)
+                 try:
+                     final_state = WorkflowState(**final_state_dict)
                  except TypeError as te:
-                     logger.error(f"Mismatch between final state dict and WorkflowState dataclass: {te}")
-                     logger.debug(f"Final state dict keys: {list(final_state_dict.keys())}")
+                     logger.error(f"Mismatch between final state dict and WorkflowState dataclass: {te}. Keys: {list(final_state_dict.keys())}")
                      raise WorkflowError(f"Could not reconstruct final WorkflowState: {te}")
             else:
                  logger.error(f"Workflow execution returned unexpected type: {type(final_state_dict)}")
                  raise WorkflowError("Workflow execution did not return a valid final state dictionary.")
+
         except Exception as e:
             logger.error(f"Workflow execution failed: {e}", exc_info=True)
-            logs_on_fail = [LogEntry(**log) for log in initial_state_input.get('logs', [])]
-            error_result = Result(question=question, answer_text=f"Workflow execution failed: {e}", execution_metadata={"error": str(e)}, log_entries=logs_on_fail)
+            logs_on_fail = []
+            if isinstance(initial_state_input.get('logs'), list):
+                 logs_on_fail = [LogEntry(**log) for log in initial_state_input['logs'] if isinstance(log, dict)]
+            error_result = Result(question=question, answer_text=f"Workflow execution failed: {e}", execution_metadata={"error": str(e)}, log_entries=logs_on_fail, graph_diagram_data=graph_png_bytes)
             return error_result
 
         if final_state is None:
              logger.error("Final state object is None after workflow invocation.")
-             return Result(question=question, answer_text="Workflow failed: Final state object missing.", execution_metadata={"error": "Final state object missing"})
-        result = self._create_result_from_state(final_state)
+             return Result(question=question, answer_text="Workflow failed: Final state object missing.", execution_metadata={"error": "Final state object missing"}, graph_diagram_data=graph_png_bytes)
+
+        # Use the correctly scoped variable containing the PNG bytes (or None)
+        result = self._create_result_from_state(final_state, graph_png_bytes)
+
         end_run_time = time.time()
-        result.execution_metadata["total_duration_sec"] = round(end_run_time - start_run_time, 3)
-        logger.info(f"--- Workflow Run Completed in {result.execution_metadata['total_duration_sec']:.3f} seconds ---")
+        if isinstance(result.execution_metadata, dict):
+            result.execution_metadata["total_duration_sec"] = round(end_run_time - start_run_time, 3)
+        else:
+             logger.warning("Execution metadata is not a dict, cannot add duration.")
+
+        logger.info(f"--- Workflow Run Completed in {result.execution_metadata.get('total_duration_sec', 'N/A'):.3f} seconds ---")
         return result
 
-    def _create_result_from_state(self, final_state: WorkflowState) -> Result:
-        from ..data_models.workflow_state import UrlUsageInfo
+    def _create_result_from_state(self, final_state: WorkflowState, graph_diagram_data: Optional[bytes] = None) -> Result:
+        """Creates the final Result object from the WorkflowState."""
         from ..data_models.result import SourceInfo, LogEntry
+        from ..data_models.workflow_state import UrlUsageInfo
+
         source_summary: List[SourceInfo] = []
-        for url, usage_info in final_state.url_usage_tracking.items():
-            final_relevance: Optional[float] = None
-            if usage_info.relevance_scores:
-                 try: final_relevance = round(sum(usage_info.relevance_scores) / len(usage_info.relevance_scores), 2)
-                 except ZeroDivisionError: pass
-            source_summary.append(SourceInfo(url=url, source_type=usage_info.source_type, final_relevance_metric=final_relevance, usage_count=usage_info.count))
-        log_entries = [LogEntry(**log_dict) for log_dict in final_state.logs]
+        if isinstance(final_state.url_usage_tracking, dict):
+            for url, usage_info in final_state.url_usage_tracking.items():
+                # Handle potential dict representation if state passed through serialization
+                if isinstance(usage_info, dict):
+                     try: usage_info = UrlUsageInfo(**usage_info)
+                     except Exception: logger.warning(f"Skipping invalid usage_info dict for URL '{url}': {usage_info}"); continue
+                elif not isinstance(usage_info, UrlUsageInfo):
+                     logger.warning(f"Skipping invalid usage_info for URL '{url}': Type {type(usage_info)}"); continue
+
+                final_relevance: Optional[float] = None
+                # Check scores list exists and is not empty
+                if hasattr(usage_info, 'relevance_scores') and isinstance(usage_info.relevance_scores, list) and usage_info.relevance_scores:
+                     try:
+                         # Filter only numeric scores before averaging
+                         numeric_scores = [s for s in usage_info.relevance_scores if isinstance(s, (int, float))]
+                         if numeric_scores: final_relevance = round(sum(numeric_scores) / len(numeric_scores), 2)
+                     except ZeroDivisionError: pass # Should not happen if numeric_scores check passed
+                # If no scores, final_relevance remains None (will be displayed as N/A)
+
+                source_summary.append(SourceInfo(
+                    url=url,
+                    source_type=getattr(usage_info, 'source_type', "unknown"),
+                    final_relevance_metric=final_relevance, # Remains None if no scores
+                    usage_count=getattr(usage_info, 'count', 0)
+                ))
+        else:
+            logger.warning("Final state url_usage_tracking is not a dict.")
+
+        log_entries = []
+        if isinstance(final_state.logs, list):
+            for log_item in final_state.logs:
+                 if isinstance(log_item, dict):
+                      try: log_entries.append(LogEntry(**log_item))
+                      except Exception: logger.warning(f"Skipping invalid log entry dict: {log_item}")
+                 elif isinstance(log_item, LogEntry): log_entries.append(log_item)
+                 else: logger.warning(f"Skipping invalid log entry item: Type {type(log_item)}")
+        else:
+             logger.warning("Final state logs is not a list.")
+
         exec_meta = {
-             "original_question": final_state.original_question, "final_retrieval_strategy": final_state.current_retrieval_strategy,
-             "transform_attempts": final_state.transform_attempts, "final_relevance_threshold": final_state.relevance_threshold,
-             "generation_metadata": final_state.generation_results, "evaluation_results": final_state.evaluation_results,
-             "docs_retrieved_count": len(final_state.retrieval_history[-1]['document_ids']) if final_state.retrieval_history else 0,
-             "docs_passed_grading_count": len(final_state.documents)
+             "original_question": final_state.original_question,
+             "final_retrieval_strategy": final_state.current_retrieval_strategy,
+             "transform_attempts": final_state.transform_attempts,
+             "final_relevance_threshold": final_state.relevance_threshold,
+             "generation_metadata": final_state.generation_results if isinstance(final_state.generation_results, dict) else {},
+             "evaluation_results": final_state.evaluation_results if isinstance(final_state.evaluation_results, dict) else {},
+             "docs_retrieved_count": len(final_state.retrieval_history[-1]['document_ids']) if final_state.retrieval_history and isinstance(final_state.retrieval_history[-1].get('document_ids'), list) else 0,
+             "docs_passed_grading_count": len(final_state.documents) if isinstance(final_state.documents, list) else 0,
+             "error": str(final_state.generation_results.get("error")) if isinstance(final_state.generation_results, dict) and final_state.generation_results.get("error") else None
         }
-        return Result(question=final_state.original_question, answer_text=final_state.answer or "No answer was generated.", final_source_summary=source_summary, log_entries=log_entries, graph_diagram_data=None, execution_metadata=exec_meta)
 
-    # --- Graph Visualization Method ---
-    def get_graph_visualization_png(self) -> Optional[bytes]:
-        """Generates a PNG visualization of the compiled workflow graph."""
-        if not self._compiled_graph:
-            logger.warning("Graph visualization requested, but graph is not compiled.")
-            raise WorkflowError("Graph not compiled, cannot visualize.")
-        logger.info("Attempting to generate workflow graph PNG...")
-        # Direct import - will raise ImportError if missing AND --show-graph used
-        try:
-            import playwright
-            import pyppeteer
-        except ImportError as ie:
-             logger.error(f"Missing visualization dependency: {ie}. Install playwright/pyppeteer.", exc_info=False)
-             raise # Re-raise import error if hit here
-
-        try:
-            # Attempt to pass timeout (speculative)
-            png_bytes = self._compiled_graph.get_graph(xray=True).draw_mermaid_png(timeout=30)
-            logger.info(f"Successfully generated graph PNG data ({len(png_bytes)} bytes).")
-            return png_bytes
-        except Exception as e:
-            logger.error(f"Failed to draw workflow graph: {e}", exc_info=True)
-            if "timed out" in str(e).lower(): logger.error("Graph drawing timed out, possibly due to mermaid.ink service.")
-            return None # Return None on other drawing errors
+        return Result(
+            question=final_state.original_question,
+            answer_text=final_state.answer or "No answer was generated.",
+            final_source_summary=source_summary,
+            log_entries=log_entries,
+            graph_diagram_data=graph_diagram_data,
+            execution_metadata=exec_meta
+        )

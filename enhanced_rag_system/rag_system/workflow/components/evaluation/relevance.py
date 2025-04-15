@@ -51,20 +51,55 @@ class RelevanceEvaluator(Evaluator):
     """
 
     # System prompt defining the evaluation task and scale
-    SYSTEM_PROMPT = """You are an expert evaluator assessing how relevant a retrieved document is to a user's question. Your task is to assign a relevance score from 1 to 5 and provide reasoning for your assessment based *only* on the provided Document and Question.
+    SYSTEM_PROMPT = """You are an expert evaluator assessing how relevant a retrieved document is to a user's question. Your task is to assign a relevance score from 1 to 5 and provide reasoning for your assessment.
 
-SCORING GUIDE:
-1 - NOT RELEVANT: Contains none of the key concepts in the question or discusses entirely different subject matter.
-2 - SLIGHTLY RELEVANT: Mentions some keywords from the question but lacks substantial information or contains only tangential references.
-3. MODERATELY RELEVANT: Contains related concepts that partially address the question, provides useful context, or has some applicable insights but doesn't directly answer.
-4 - VERY RELEVANT: Addresses major aspects of the question with substantial information, contains specific details, examples, or explanations that illuminate the question.
-5 - HIGHLY RELEVANT: Comprehensively addresses the question (or a significant sub-part) with specific and detailed information, provides direct answers or strong supporting evidence/reasoning.
+When evaluating relevance, consider:
+- Direct information: Does the document directly address aspects of the question?
+- Indirect information: Does the document contain related concepts that help understand the question?
+- Contextual value: Does the document provide helpful background or frameworks?
+- Practical application: Does the document offer examples or use cases related to the question?
+- Technical depth: Does the document offer specialized knowledge relevant to the question?
 
-IMPORTANT:
-- Evaluate based *solely* on the provided Document Content and the User Question.
-- A document can be highly relevant (4-5) even if it only answers part of the question well.
-- Consider direct and indirect relevance.
-- Assign a score from 1 to 5 and provide concise reasoning referencing the document content and the scoring guide.
+Scoring guide with examples:
+
+1 - NOT RELEVANT:
+   * Contains none of the key concepts in the question
+   * Discusses entirely different subject matter
+   * Example: A document about cooking techniques when asked about AI agents
+
+2 - SLIGHTLY RELEVANT:
+   * Mentions some keywords from the question but lacks substantial information
+   * Contains only tangential references to the subject
+   * Example: A document that merely mentions "AI agents" once but focuses on other topics
+
+3 - MODERATELY RELEVANT:
+   * Contains related concepts that partially address the question
+   * Provides useful context or background information
+   * Has some applicable insights but doesn't directly answer the question
+   * Example: A document discussing general AI workflows that mentions agents as components
+
+4 - VERY RELEVANT:
+   * Addresses major aspects of the question with substantial information
+   * Contains specific details related to the query
+   * Provides examples or explanations that illuminate the question
+   * Example: A document describing several roles of AI agents in workflows with examples
+
+5 - HIGHLY RELEVANT:
+   * Comprehensively addresses the question with specific and detailed information
+   * Provides direct answers with supporting evidence, examples, or reasoning
+   * Contains expert insights on the exact topic of the question
+   * Example: A document specifically focused on the roles and responsibilities of AI agents in workflows
+
+Important guidelines:
+1. A document doesn't need to answer the ENTIRE question to be highly relevant (4-5). It can address a subset of the question deeply.
+2. Technical documents often contain valuable information indirectly - look for implicit knowledge.
+3. Consider how this document might contribute to an answer, even if it alone isn't sufficient.
+4. Don't require exact keyword matches - semantic relevance matters more than specific terminology.
+5. For questions about emerging technologies, consider both theoretical and practical perspectives.
+
+For your evaluation, provide:
+1. A relevance score from a broad range 1-5 (use the full range of scores, not just 2-3)
+2. Specific reasoning explaining your score, mentioning the content elements that influenced your decision
 """
 
     HUMAN_PROMPT_TEMPLATE = "Retrieved document content:\n---\n{document}\n---\n\nUser question: {question}"
