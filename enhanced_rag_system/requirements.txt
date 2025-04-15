@@ -1,0 +1,18 @@
+# Core Dependencies
+python-dotenv
+langchain
+langgraph
+langchain-openai
+# langchain-anthropic
+# langchain-google-genai
+chromadb
+streamlit
+
+# Optional for graph visualization
+# playwright
+# pyppeteer
+
+# Optional for development
+# black
+# ruff
+# pytest
