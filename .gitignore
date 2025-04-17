@@ -134,3 +134,13 @@ cython_debug/
 
 # VSCode settings
 .vscode/
+
+.idea/
+
+# Database Files (ensure general pattern exists)
+*.sqlite3
+*.db
+
+# Specific large/generated files seen in logs
+project_source_snapshot.txt
+enhanced_rag_system/rag_system/docs/*.pdf
