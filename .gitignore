@@ -143,4 +143,4 @@ cython_debug/
 
 # Specific large/generated files seen in logs
 project_source_snapshot.txt
-enhanced_rag_system/rag_system/docs/*.pdf
+enhanced_rag_system/rag_system/docs/*.pdfe5b6a397-f411-4851-800a-11be30a98d10/
